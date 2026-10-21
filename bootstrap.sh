@@ -76,7 +76,10 @@ ask NEWPORT "New SSH port" "$OLDPORT"; port "$NEWPORT" || die "Invalid new port"
 ask EXTRAS "Extra UFW ports (e.g. 80/tcp 443/tcp 51820/udp)" ""
 for rule in $EXTRAS; do
   [[ "$rule" =~ ^([0-9]{1,5})(:([0-9]{1,5}))?/(tcp|udp)$ ]] || die "Invalid UFW rule: $rule"
-  port "${BASH_REMATCH[1]}" && port "${BASH_REMATCH[3]:-${BASH_REMATCH[1]}}" || die "Invalid UFW port"
+  first_port="${BASH_REMATCH[1]}"
+  last_port="${BASH_REMATCH[3]:-$first_port}"
+  port "$first_port" && port "$last_port" || die "Invalid UFW port"
+  (( 10#$first_port <= 10#$last_port )) || die "Invalid UFW port range: $rule"
 done
 if yes "Install Docker Engine and Compose plugin?"; then DOCKER=1; else DOCKER=0; fi
 if yes "Add local SSH alias?"; then
