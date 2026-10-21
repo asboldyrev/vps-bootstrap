@@ -15,6 +15,20 @@ ask HOST "VPS IP or DNS" ""
 ask LOGIN "Current SSH login" root
 [[ "$LOGIN" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "Invalid login"
 ask OLDPORT "Current SSH port" 22; port "$OLDPORT" || die "Invalid port"
+# Keep the initial authentication deterministic: do not offer every ssh-agent key.
+ask AUTH "Initial SSH authentication (password/key)" "password"
+case "$AUTH" in
+  password)
+    AUTH_OPTS=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive -o NumberOfPasswordPrompts=3)
+    ;;
+  key)
+    ask INITIAL_KEY "Initial SSH private key" "$HOME/.ssh/id_ed25519"
+    INITIAL_KEY="${INITIAL_KEY/#\~/$HOME}"
+    [[ -f "$INITIAL_KEY" && -r "$INITIAL_KEY" ]] || die "Initial private SSH key is not readable"
+    AUTH_OPTS=(-o IdentitiesOnly=yes -o IdentityFile="$INITIAL_KEY" -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no)
+    ;;
+  *) die "Choose password or key" ;;
+esac
 # Establish a single authenticated SSH master before asking setup questions.
 # The socket remains private to this run and is reused by scp and subsequent commands.
 TARGET="$LOGIN@$HOST"
@@ -28,7 +42,7 @@ cleanup() {
 }
 trap cleanup EXIT
 echo "Connecting to $TARGET on port $OLDPORT (SSH may ask for a password or key passphrase)..."
-ssh -M -N -f -S "$CONTROL" -o ControlMaster=yes -o ControlPersist=yes -o StrictHostKeyChecking=ask -p "$OLDPORT" "$TARGET" \
+ssh -M -N -f -S "$CONTROL" "${AUTH_OPTS[@]}" -o ControlMaster=yes -o ControlPersist=yes -o StrictHostKeyChecking=ask -p "$OLDPORT" "$TARGET" \
   || die "Initial SSH connection failed"
 SSH=(-p "$OLDPORT" -o ControlMaster=auto -o ControlPath="$CONTROL" -o StrictHostKeyChecking=ask)
 ssh "${SSH[@]}" "$TARGET" true || die "Initial SSH connection check failed"
