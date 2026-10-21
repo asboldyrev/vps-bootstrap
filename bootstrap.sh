@@ -15,6 +15,24 @@ ask HOST "VPS IP or DNS" ""
 ask LOGIN "Current SSH login" root
 [[ "$LOGIN" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "Invalid login"
 ask OLDPORT "Current SSH port" 22; port "$OLDPORT" || die "Invalid port"
+# Establish a single authenticated SSH master before asking setup questions.
+# The socket remains private to this run and is reused by scp and subsequent commands.
+TARGET="$LOGIN@$HOST"
+TMP=$(mktemp -d)
+CONTROL="$TMP/control.sock"
+cleanup() {
+  if [[ -S "$CONTROL" ]]; then
+    ssh -S "$CONTROL" -O exit -p "$OLDPORT" "$TARGET" >/dev/null 2>&1 || true
+  fi
+  rm -rf -- "$TMP"
+}
+trap cleanup EXIT
+echo "Connecting to $TARGET on port $OLDPORT (SSH may ask for a password or key passphrase)..."
+ssh -M -N -f -S "$CONTROL" -o ControlMaster=yes -o ControlPersist=20m -o StrictHostKeyChecking=ask -p "$OLDPORT" "$TARGET" \
+  || die "Initial SSH connection failed"
+SSH=(-p "$OLDPORT" -o ControlMaster=auto -o ControlPath="$CONTROL" -o StrictHostKeyChecking=ask)
+ssh "${SSH[@]}" "$TARGET" true || die "Initial SSH connection check failed"
+echo "Connected. Now configuring the new administrator and security settings."
 ask ADMIN "New administrator name" admin
 [[ "$ADMIN" =~ ^[a-z_][a-z0-9_-]{0,30}$ && "$ADMIN" != root ]] || die "Invalid administrator"
 ask PUB "Public SSH key (.pub)" "$HOME/.ssh/id_ed25519.pub"
@@ -42,16 +60,12 @@ else ALIAS=""; fi
 printf '\nTarget: %s@%s:%s -> %s@%s:%s\nUFW: %s\nDocker: %s\n' "$LOGIN" "$HOST" "$OLDPORT" "$ADMIN" "$HOST" "$NEWPORT" "$EXTRAS" "$DOCKER"
 echo "IMPORTANT: have access to the provider console and open the new SSH port in the provider firewall."
 yes "Proceed with potentially disruptive changes?" || exit 0
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 CONF="$TMP/config.env"
 printf 'ADMIN=%q\nOLDPORT=%q\nNEWPORT=%q\nNOPASS=%q\nEXTRAS=%q\nDOCKER=%q\nKEY=%q\n' "$ADMIN" "$OLDPORT" "$NEWPORT" "$NOPASS" "$EXTRAS" "$DOCKER" "$KEY" >"$CONF"
-TARGET="$LOGIN@$HOST"
-SSH=(-p "$OLDPORT" -o StrictHostKeyChecking=ask)
 SCP_HOST="$HOST"; [[ "$HOST" != *:* ]] || SCP_HOST="[$HOST]"
-ssh "${SSH[@]}" "$TARGET" "true" || die "Initial SSH connection failed"
 RDIR=$(ssh "${SSH[@]}" "$TARGET" 'mktemp -d /tmp/vps-bootstrap.XXXXXXXX') || die "Cannot prepare remote directory"
 [[ "$RDIR" =~ ^/tmp/vps-bootstrap\.[[:alnum:]]+$ ]] || die "Invalid remote directory"
-scp -P "$OLDPORT" "$HERE/remote.sh" "$CONF" "$LOGIN@$SCP_HOST:$RDIR/" || die "SCP failed"
+scp -P "$OLDPORT" -o ControlMaster=auto -o ControlPath="$CONTROL" "$HERE/remote.sh" "$CONF" "$LOGIN@$SCP_HOST:$RDIR/" || die "SCP failed"
 RUN="bash '$RDIR/remote.sh'"; [[ "$LOGIN" == root ]] || RUN="sudo $RUN"
 ssh -tt "${SSH[@]}" "$TARGET" "$RUN prepare '$RDIR/config.env'" || die "Prepare failed: original SSH remains enabled"
 CHECK=(-i "$PRIV" -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ControlMaster=no -o ConnectTimeout=12)
