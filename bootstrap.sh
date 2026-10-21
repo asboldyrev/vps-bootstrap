@@ -37,7 +37,19 @@ ask ADMIN "New administrator name" admin
 [[ "$ADMIN" =~ ^[a-z_][a-z0-9_-]{0,30}$ && "$ADMIN" != root ]] || die "Invalid administrator"
 ask PUB "Public SSH key (.pub)" "$HOME/.ssh/id_ed25519.pub"
 PUB="${PUB/#\~/$HOME}"
-[[ "$PUB" == *.pub && -r "$PUB" && -r "${PUB%.pub}" ]] || die "A readable public/private SSH key pair is required"
+[[ "$PUB" == *.pub ]] || die "The public key path must end in .pub"
+PRIV="${PUB%.pub}"
+if [[ ! -e "$PUB" && ! -e "$PRIV" ]]; then
+  echo "SSH key pair not found: $PRIV and $PUB"
+  if ! yes "Create a new Ed25519 SSH key pair at $PRIV?"; then
+    die "SSH key is required to verify the new administrator before disabling password login. No VPS configuration was changed."
+  fi
+  mkdir -p -- "$(dirname -- "$PRIV")"
+  ssh-keygen -t ed25519 -f "$PRIV" -C "vps-bootstrap" || die "SSH key generation failed"
+elif [[ ! -e "$PUB" || ! -e "$PRIV" ]]; then
+  die "Incomplete SSH key pair: both $PRIV and $PUB must exist. Existing files will not be overwritten."
+fi
+[[ -f "$PUB" && -r "$PUB" && -f "$PRIV" && -r "$PRIV" ]] || die "SSH key files must be readable regular files"
 ssh-keygen -lf "$PUB" >/dev/null || die "Invalid public key"
 KEY=$(<"$PUB")
 [[ "$KEY" != *$'\n'* && "$KEY" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[^[:space:]]+)[[:space:]] ]] || die "Expected one SSH public key"
