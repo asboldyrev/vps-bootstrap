@@ -13,15 +13,11 @@ chmod +x bootstrap.sh
 ./bootstrap.sh
 ```
 
-Requirements: local `bash`, `ssh`, `scp`, `ssh-keygen`; initial root SSH access (or an existing sudo-enabled user), a local SSH key pair (`~/.ssh/id_ed25519{,.pub}` by default), and a Debian/Ubuntu VPS with systemd and apt. Generate an SSH key if needed:
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
-```
+Requirements: local `bash`, `ssh`, `scp`, `ssh-keygen`; initial root SSH access (or an existing sudo-enabled user), a Debian/Ubuntu VPS with systemd and apt. A local SSH key pair (`~/.ssh/id_ed25519{,.pub}` by default) is used if available. When neither file exists, the launcher offers to generate a new Ed25519 key pair with `ssh-keygen` (including its standard passphrase prompt). If you decline, the launcher exits before changing the VPS. If only one file exists, it stops without overwriting or regenerating anything.
 
 **Never send your private key to the VPS.** Only the public key is installed. If the initial SSH user is not root, the script expects working `sudo` privileges.
 
-The launcher first asks for the VPS address, current SSH user and port, **then immediately opens one authenticated SSH master connection** (prompting for the root password/key passphrase if needed). Once connected, it asks for the new administrator name, public-key path, passworded or passwordless sudo, new SSH port, extra UFW ports (e.g. `80/tcp 443/tcp 51820/udp`), Docker/Compose installation and local SSH alias.
+The launcher first asks for the VPS address, current SSH user and port, **then immediately opens one authenticated SSH master connection** (prompting for the root password/key passphrase if needed). Once connected, it asks for the new administrator name, public-key path (creating a pair if both files are missing), passworded or passwordless sudo, new SSH port, extra UFW ports (e.g. `80/tcp 443/tcp 51820/udp`), Docker/Compose installation and local SSH alias.
 
 ## Workflow
 
