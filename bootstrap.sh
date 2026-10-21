@@ -28,7 +28,7 @@ cleanup() {
 }
 trap cleanup EXIT
 echo "Connecting to $TARGET on port $OLDPORT (SSH may ask for a password or key passphrase)..."
-ssh -M -N -f -S "$CONTROL" -o ControlMaster=yes -o ControlPersist=20m -o StrictHostKeyChecking=ask -p "$OLDPORT" "$TARGET" \
+ssh -M -N -f -S "$CONTROL" -o ControlMaster=yes -o ControlPersist=yes -o StrictHostKeyChecking=ask -p "$OLDPORT" "$TARGET" \
   || die "Initial SSH connection failed"
 SSH=(-p "$OLDPORT" -o ControlMaster=auto -o ControlPath="$CONTROL" -o StrictHostKeyChecking=ask)
 ssh "${SSH[@]}" "$TARGET" true || die "Initial SSH connection check failed"
