@@ -21,18 +21,18 @@ ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
 
 **Never send your private key to the VPS.** Only the public key is installed. If the initial SSH user is not root, the script expects working `sudo` privileges.
 
-The launcher asks for VPS address, current SSH user and port, new administrator name, public-key path, passworded or passwordless sudo, new SSH port, extra UFW ports (e.g. `80/tcp 443/tcp 51820/udp`), Docker/Compose installation and local SSH alias.
+The launcher first asks for the VPS address, current SSH user and port, **then immediately opens one authenticated SSH master connection** (prompting for the root password/key passphrase if needed). Once connected, it asks for the new administrator name, public-key path, passworded or passwordless sudo, new SSH port, extra UFW ports (e.g. `80/tcp 443/tcp 51820/udp`), Docker/Compose installation and local SSH alias.
 
 ## Workflow
 
-1. Connect to the original SSH account and stage a temporary worker.
+1. Ask for IP/hostname and initial SSH credentials (user and port); authenticate immediately over SSH. Keep that SSH connection open with ControlMaster/ControlPersist for subsequent commands and SCP transfers, so a password login typically needs only one password prompt. Then ask for bootstrap options and stage a temporary worker.
 2. Update apt packages; install base tools (sudo, curl, ca-certificates, git, nano, htop, UFW, OpenSSH, unattended-upgrades and Fail2ban); create administrator, sudo policy and authorized key.
-3. Independently confirm SSH public-key login and sudo before changing SSH security.
+3. Independently confirm SSH public-key login and sudo **without reusing the initial root SSH master** before changing SSH security.
 4. Open original/new SSH ports in UFW, then install SSH hardening: no root SSH, no password/keyboard-interactive authentication, optional custom SSH port. Validate `sshd` settings. A systemd rollback timer restores the previous SSH configuration in approximately 10 minutes if not confirmed.
 5. Enable automatic updates (no automatic reboot) and Fail2ban; optionally install Docker Engine, Buildx and Compose Plugin from Docker's official repository.
-6. Independently verify login and sudo on the new port, cancel the rollback timer, show diagnostics, and optionally write a local `~/.ssh/config` alias.
+6. Independently verify login and sudo on the new port (with no connection multiplexing), cancel the rollback timer, show diagnostics, and optionally write a local `~/.ssh/config` alias.
 
-Reboots are not automatic. No hostname, timezone or swap changes. The configuration should be rerunnable on **fresh** VPS instances, but is not guaranteed to preserve all pre-existing custom SSH, UFW or Docker setups.
+The initial SSH master uses a run-private socket which the launcher closes on exit. If the initial SSH login requires a password, OpenSSH — not this script — prompts for it and the script does not save it. Reboots are not automatic. No hostname, timezone or swap changes. The configuration should be rerunnable on **fresh** VPS instances, but is not guaranteed to preserve all pre-existing custom SSH, UFW or Docker setups.
 
 ## SSH and firewall safety
 
