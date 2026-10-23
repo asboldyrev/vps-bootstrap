@@ -44,7 +44,9 @@ secure)
  # Both ports are opened before applying any potentially disruptive SSH changes.
  ufw allow "${OLDPORT}/tcp"
  ufw allow "${NEWPORT}/tcp"
- for p in $EXTRAS; do ufw allow "$p"; done
+ if [[ -n "$EXTRAS" ]]; then
+   for p in $EXTRAS; do ufw allow "$p"; done
+ fi
  ufw default deny incoming
  ufw default allow outgoing
  ufw --force enable
@@ -52,6 +54,16 @@ secure)
  [[ -d /etc/ssh/sshd_config.d ]] || mkdir -p /etc/ssh/sshd_config.d
  [[ ! -f /etc/ssh/sshd_config.d/00-vps-bootstrap.conf ]] || cp -a /etc/ssh/sshd_config.d/00-vps-bootstrap.conf /var/lib/vps-bootstrap/ssh-dropin.bak
  cp -a /etc/ssh/sshd_config /var/lib/vps-bootstrap/sshd_config.before
+ if systemctl is-active --quiet ssh.socket; then
+   SSH_ACTIVATION=socket
+ elif systemctl is-active --quiet ssh.service; then
+   SSH_ACTIVATION=service
+ else
+   log "No active SSH socket or service; aborting"
+   exit 1
+ fi
+ printf "%s\n" "$SSH_ACTIVATION" >/var/lib/vps-bootstrap/ssh-activation.before
+ printf "%s\n" "$OLDPORT" >/var/lib/vps-bootstrap/old-port.before
  cat >/var/lib/vps-bootstrap/rollback.sh <<'ROLLBACK'
 #!/bin/bash
 set -e
@@ -61,9 +73,13 @@ if [ -f /var/lib/vps-bootstrap/ssh-dropin.bak ]; then
 else
  rm -f /etc/ssh/sshd_config.d/00-vps-bootstrap.conf
 fi
+/usr/sbin/sshd -t
 systemctl daemon-reload
-systemctl restart ssh.socket 2>/dev/null || true
-systemctl restart ssh.service 2>/dev/null || true
+case "$(cat /var/lib/vps-bootstrap/ssh-activation.before)" in
+ socket) systemctl restart ssh.socket ;;
+ service) systemctl restart ssh.service ;;
+esac
+ufw allow "$(cat /var/lib/vps-bootstrap/old-port.before)/tcp"
 ROLLBACK
  chmod 700 /var/lib/vps-bootstrap/rollback.sh
  systemd-run --unit=vps-bootstrap-rollback --on-active=10m /bin/bash /var/lib/vps-bootstrap/rollback.sh
@@ -72,10 +88,20 @@ ROLLBACK
  sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
  printf 'Port %s\nPermitRootLogin no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\n' "$NEWPORT" >/etc/ssh/sshd_config.d/00-vps-bootstrap.conf
  /usr/sbin/sshd -t || { bash /var/lib/vps-bootstrap/rollback.sh; exit 1; }
- # ssh.socket may pin a different port, so prefer ssh.service.
- systemctl disable --now ssh.socket 2>/dev/null || true
- systemctl enable ssh.service
- systemctl restart ssh.service || { bash /var/lib/vps-bootstrap/rollback.sh; exit 1; }
+ # Preserve Ubuntu 24.04 socket activation; do not switch to ssh.service.
+ if [[ "$SSH_ACTIVATION" == socket ]]; then
+   if ! systemctl daemon-reload || ! systemctl restart ssh.socket || ! systemctl is-active --quiet ssh.socket; then
+     log "Socket reload failed; restoring original SSH configuration"
+     bash /var/lib/vps-bootstrap/rollback.sh || true
+     exit 1
+   fi
+ else
+   if ! systemctl restart ssh.service || ! systemctl is-active --quiet ssh.service; then
+     log "SSH service failed; restoring original configuration"
+     bash /var/lib/vps-bootstrap/rollback.sh || true
+     exit 1
+   fi
+ fi
  # Confirm effective settings, not just syntax.
  EFFECTIVE=$(/usr/sbin/sshd -T)
  grep -qx "port $NEWPORT" <<<"$EFFECTIVE" || { bash /var/lib/vps-bootstrap/rollback.sh; exit 1; }
