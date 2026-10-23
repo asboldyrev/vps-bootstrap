@@ -73,7 +73,7 @@ PRIVATE_KEY_ID=$(ssh-keygen -y -f "$PRIV" | awk '{print $2}') || die "Could not 
 [[ "$KEY_ID" == "$PRIVATE_KEY_ID" ]] || die "Public/private key mismatch"
 if yes "Passwordless sudo?"; then NOPASS=1; else NOPASS=0; fi
 ask NEWPORT "New SSH port" "$OLDPORT"; port "$NEWPORT" || die "Invalid new port"
-ask EXTRAS "Extra UFW ports (e.g. 80/tcp 443/tcp 51820/udp)" ""
+ask EXTRAS "Extra UFW ports (optional; Enter to skip, e.g. 80/tcp 443/tcp)" ""
 for rule in $EXTRAS; do
   [[ "$rule" =~ ^([0-9]{1,5})(:([0-9]{1,5}))?/(tcp|udp)$ ]] || die "Invalid UFW rule: $rule"
   first_port="${BASH_REMATCH[1]}"
