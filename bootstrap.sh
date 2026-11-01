@@ -9,7 +9,7 @@ ask() { local v; read -r -p "$2 [$3]: " v; printf -v "$1" '%s' "${v:-$3}"; }
 yes() { local a; read -r -p "$1 [y/N]: " a; [[ "$a" =~ ^([yY]|yes|да|д)$ ]]; }
 port() { [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1>=1 && 10#$1<=65535 )); }
 die() { echo "ERROR: $*" >&2; exit 1; }
-echo "VPS Bootstrap 1.0 — Debian/Ubuntu, local SSH launcher"
+echo "VPS Bootstrap 1.1 — Debian/Ubuntu, local SSH launcher"
 ask HOST "VPS IP or DNS" ""
 [[ "$HOST" =~ ^[a-zA-Z0-9.:-]+$ && "$HOST" != -* ]] || die "Invalid host"
 ask LOGIN "Current SSH login" root
@@ -101,13 +101,20 @@ CHECK=(-i "$PRIV" -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -o
 test "$(ssh "${CHECK[@]}" -p "$OLDPORT" "$ADMIN@$HOST" id -un)" = "$ADMIN" || die "New SSH login not verified"
 if ((NOPASS)); then ssh "${CHECK[@]}" -p "$OLDPORT" "$ADMIN@$HOST" sudo -n true || die "sudo check failed"
 else ssh -tt "${CHECK[@]}" -p "$OLDPORT" "$ADMIN@$HOST" sudo -v || die "sudo check failed"; fi
-echo "New SSH key and sudo verified. Applying firewall and SSH hardening..."
-ssh -tt "${SSH[@]}" "$TARGET" "$RUN secure '$RDIR/config.env'" || die "Hardening failed; recovery timer may be active"
+echo "Admin verified. Installing services before any SSH change..."
+ssh -tt "${SSH[@]}" "$TARGET" "$RUN services '$RDIR/config.env'" || die "Services setup failed; original SSH still configured"
+echo "Services installed. Staging new SSH port while keeping original root policy..."
+ssh -tt "${SSH[@]}" "$TARGET" "$RUN secure '$RDIR/config.env'" || die "SSH staging failed; recovery timer may be active"
 if ! test "$(ssh "${CHECK[@]}" -p "$NEWPORT" "$ADMIN@$HOST" id -un 2>/dev/null)" = "$ADMIN"; then
  die "New SSH port inaccessible! Keep existing session open; the server will restore SSH automatically after ~10 minutes."
 fi
 if ((NOPASS)); then ssh "${CHECK[@]}" -p "$NEWPORT" "$ADMIN@$HOST" sudo -n true || die "New-port sudo check failed"
 else ssh -tt "${CHECK[@]}" -p "$NEWPORT" "$ADMIN@$HOST" sudo -v || die "New-port sudo check failed"; fi
+echo "Admin verified on new port. Now disabling root and password SSH..."
+ssh -tt "${CHECK[@]}" -p "$NEWPORT" "$ADMIN@$HOST" "sudo bash /var/lib/vps-bootstrap/remote.sh lock /var/lib/vps-bootstrap/config.env" || die "SSH lockdown failed; rollback timer active"
+test "$(ssh "${CHECK[@]}" -p "$NEWPORT" "$ADMIN@$HOST" id -un 2>/dev/null)" = "$ADMIN" || die "Post-lock SSH failed; rollback timer active"
+if ((NOPASS)); then ssh "${CHECK[@]}" -p "$NEWPORT" "$ADMIN@$HOST" sudo -n true || die "Post-lock sudo check failed"
+else ssh -tt "${CHECK[@]}" -p "$NEWPORT" "$ADMIN@$HOST" sudo -v || die "Post-lock sudo check failed"; fi
 ssh -tt "${CHECK[@]}" -p "$NEWPORT" "$ADMIN@$HOST" "sudo bash /var/lib/vps-bootstrap/remote.sh confirm /var/lib/vps-bootstrap/config.env" || die "Could not confirm; manual confirmation required"
 if [[ -n "$ALIAS" ]]; then
  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; touch "$HOME/.ssh/config"; chmod 600 "$HOME/.ssh/config"
