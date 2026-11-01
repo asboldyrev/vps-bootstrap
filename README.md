@@ -1,4 +1,4 @@
-# VPS Bootstrap v1.0 (draft)
+# VPS Bootstrap v1.1 (draft)
 
 Interactive **local** Bash bootstrap for newly created Debian/Ubuntu VPS. Runs on a Linux workstation (e.g. Linux Mint), connects over SSH, and needs neither cloud-init nor Ansible.
 
@@ -21,12 +21,13 @@ The launcher first asks for the VPS address, current SSH user and port, then off
 
 ## Workflow
 
-1. Ask for IP/hostname and initial SSH credentials (user and port); authenticate immediately over SSH. Keep that SSH connection open with ControlMaster/ControlPersist for subsequent commands and SCP transfers, so a password login typically needs only one password prompt. Then ask for bootstrap options and stage a temporary worker.
-2. Update apt packages; install base tools (sudo, curl, ca-certificates, git, nano, htop, UFW, OpenSSH, unattended-upgrades and Fail2ban); create administrator, sudo policy and authorized key.
-3. Independently confirm SSH public-key login and sudo **without reusing the initial root SSH master** before changing SSH security.
-4. Open original/new SSH ports in UFW, then install SSH hardening: no root SSH, no password/keyboard-interactive authentication, optional custom SSH port. Validate `sshd` settings. Preserve active SSH management: restart `ssh.socket` after `daemon-reload` on socket-activated Ubuntu 24.04, or restart `ssh.service` on service-managed systems. A systemd rollback timer restores the previous SSH config and original SSH activation mode in approximately 10 minutes if not confirmed.
-5. Enable automatic updates (no automatic reboot) and Fail2ban; optionally install Docker Engine, Buildx and Compose Plugin from Docker's official repository.
-6. Independently verify login and sudo on the new port (with no connection multiplexing), cancel the rollback timer, show diagnostics, and optionally write a local `~/.ssh/config` alias.
+1. Prepare the admin user and verify fresh SSH key login and sudo.
+2. Install services (including optional Docker) before changing SSH or firewall. Reuse existing Docker apt sources to avoid conflicting Signed-By records.
+3. Stage a new SSH port, arm ten-minute rollback, preserve original root/password policy; independently verify admin SSH on new port.
+4. As the final SSH change, disable root/password SSH; verify fresh admin login and sudo again, then cancel rollback.
+5. Optionally create a local SSH alias.
+
+Provider console remains necessary: automated rollback is not a guarantee against SSH lockout.
 
 The initial SSH master uses a run-private socket which the launcher closes on exit. If the initial SSH login requires a password, OpenSSH — not this script — prompts for it and the script does not save it. Reboots are not automatic. No hostname, timezone or swap changes. The configuration should be rerunnable on **fresh** VPS instances, but is not guaranteed to preserve all pre-existing custom SSH, UFW or Docker setups.
 
