@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 umask 077
 [[ $EUID -eq 0 ]] || { echo "Requires root/sudo" >&2; exit 1; }
-MODE=${1:?Expected prepare|secure|confirm}
+MODE=${1:?Expected prepare|services|secure|lock|confirm}
 CFG=${2:?Expected configuration path}
 [[ -f "$CFG" ]] || exit 1
 # This file is produced locally with Bash %q escaping, and never from untrusted input.
@@ -40,6 +40,44 @@ prepare)
  visudo -cf /etc/sudoers >/dev/null
  log "Preparation done. Verify new SSH key and sudo from local computer."
 ;;
+services)
+ # Install services BEFORE making SSH or UFW changes.
+ # Configure automatic security updates without automatic reboot.
+ cat >/etc/apt/apt.conf.d/52-vps-bootstrap <<'APT'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+Unattended-Upgrade::Automatic-Reboot "false";
+APT
+ systemctl enable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+ cat >/etc/fail2ban/jail.d/vps-bootstrap.local <<'F2B'
+[sshd]
+enabled = true
+backend = systemd
+F2B
+ systemctl enable --now fail2ban || true
+ systemctl restart fail2ban || true
+ if ((DOCKER)); then
+   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && docker buildx version >/dev/null 2>&1; then
+     log "Docker already installed."
+   else
+     . /etc/os-release
+     ARCH=$(dpkg --print-architecture)
+     CODENAME=$( . /etc/os-release; echo "$VERSION_CODENAME" )
+     if grep -RqlF "https://download.docker.com/linux/$ID" /etc/apt/sources.list /etc/apt/sources.list.d --include='*.list' --include='*.sources' 2>/dev/null; then
+       log "Existing Docker apt source detected. Reusing it."
+     else
+       install -d -m 0755 /etc/apt/keyrings
+       curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
+       chmod a+r /etc/apt/keyrings/docker.asc
+       printf 'Types: deb\nURIs: https://download.docker.com/linux/%s\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n' "$ID" "$CODENAME" "$ARCH" >/etc/apt/sources.list.d/docker.sources
+     fi
+     apt-get update
+     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+     systemctl enable --now docker
+   fi
+ fi
+ log "Services installed; SSH and firewall unchanged."
+;;
 secure)
  # Both ports are opened before applying any potentially disruptive SSH changes.
  ufw allow "${OLDPORT}/tcp"
@@ -49,7 +87,7 @@ secure)
  fi
  ufw default deny incoming
  ufw default allow outgoing
- ufw --force enable
+ # Delay enabling UFW until SSH service and its port are checked.
  if [[ -f /etc/ssh/sshd_config ]]; then cp -a /etc/ssh/sshd_config /var/lib/vps-bootstrap/sshd_config.bak; fi
  [[ -d /etc/ssh/sshd_config.d ]] || mkdir -p /etc/ssh/sshd_config.d
  [[ ! -f /etc/ssh/sshd_config.d/00-vps-bootstrap.conf ]] || cp -a /etc/ssh/sshd_config.d/00-vps-bootstrap.conf /var/lib/vps-bootstrap/ssh-dropin.bak
@@ -86,7 +124,7 @@ ROLLBACK
  # Include the managed file first, so OpenSSH first-value-wins rules work.
  sed -i '/^[[:space:]]*Include[[:space:]]*\/etc\/ssh\/sshd_config.d\/\*.conf/d' /etc/ssh/sshd_config
  sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
- printf 'Port %s\nPermitRootLogin no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\n' "$NEWPORT" >/etc/ssh/sshd_config.d/00-vps-bootstrap.conf
+ printf 'Port %s\n' "$NEWPORT" >/etc/ssh/sshd_config.d/00-vps-bootstrap.conf
  /usr/sbin/sshd -t || { bash /var/lib/vps-bootstrap/rollback.sh; exit 1; }
  # Preserve Ubuntu 24.04 socket activation; do not switch to ssh.service.
  if [[ "$SSH_ACTIVATION" == socket ]]; then
@@ -105,40 +143,34 @@ ROLLBACK
  # Confirm effective settings, not just syntax.
  EFFECTIVE=$(/usr/sbin/sshd -T)
  grep -qx "port $NEWPORT" <<<"$EFFECTIVE" || { bash /var/lib/vps-bootstrap/rollback.sh; exit 1; }
- grep -qx 'permitrootlogin no' <<<"$EFFECTIVE" || { bash /var/lib/vps-bootstrap/rollback.sh; exit 1; }
- grep -qx 'passwordauthentication no' <<<"$EFFECTIVE" || { bash /var/lib/vps-bootstrap/rollback.sh; exit 1; }
- grep -qx 'kbdinteractiveauthentication no' <<<"$EFFECTIVE" || { bash /var/lib/vps-bootstrap/rollback.sh; exit 1; }
+ ufw --force enable
  install -m 700 "$0" /var/lib/vps-bootstrap/remote.sh
  install -m 600 "$CFG" /var/lib/vps-bootstrap/config.env
- # Configure automatic security updates without automatic reboot.
- cat >/etc/apt/apt.conf.d/52-vps-bootstrap <<'APT'
-APT::Periodic::Update-Package-Lists "1";
-APT::Periodic::Unattended-Upgrade "1";
-Unattended-Upgrade::Automatic-Reboot "false";
-APT
- systemctl enable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
- cat >/etc/fail2ban/jail.d/vps-bootstrap.local <<'F2B'
-[sshd]
-enabled = true
-backend = systemd
-F2B
- systemctl enable --now fail2ban || true
- systemctl restart fail2ban || true
- if ((DOCKER)); then
-   . /etc/os-release
-   install -d -m 0755 /etc/apt/keyrings
-   curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
-   chmod a+r /etc/apt/keyrings/docker.asc
-   ARCH=$(dpkg --print-architecture)
-   CODENAME=${VERSION_CODENAME:?}
-   printf 'Types: deb\nURIs: https://download.docker.com/linux/%s\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n' "$ID" "$CODENAME" "$ARCH" >/etc/apt/sources.list.d/docker.sources
-   apt-get update
-   apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-   systemctl enable --now docker
- fi
- log "Hardening applied. Rollback in 10 min unless confirmed."
+ log "SSH port staged; root/password auth not disabled yet. Rollback armed."
+;;
+lock)
+ # Final SSH change only after independent new-port admin check.
+ [[ -f /var/lib/vps-bootstrap/ssh-activation.before ]] || exit 1
+ printf 'Port %s\nPermitRootLogin no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\n' "$NEWPORT" >/etc/ssh/sshd_config.d/00-vps-bootstrap.conf
+ /usr/sbin/sshd -t
+ systemctl daemon-reload
+ case "$(cat /var/lib/vps-bootstrap/ssh-activation.before)" in
+   socket) systemctl restart ssh.socket; systemctl is-active --quiet ssh.socket ;;
+   service) systemctl restart ssh.service; systemctl is-active --quiet ssh.service ;;
+ esac
+ EFFECTIVE=$(/usr/sbin/sshd -T)
+ grep -qx "port $NEWPORT" <<<"$EFFECTIVE"
+ grep -qx 'permitrootlogin no' <<<"$EFFECTIVE"
+ grep -qx 'passwordauthentication no' <<<"$EFFECTIVE"
+ grep -qx 'kbdinteractiveauthentication no' <<<"$EFFECTIVE"
+ log "SSH lockdown applied; recovery timer still armed."
 ;;
 confirm)
+ EFFECTIVE=$(/usr/sbin/sshd -T)
+ grep -qx "port $NEWPORT" <<<"$EFFECTIVE"
+ grep -qx 'permitrootlogin no' <<<"$EFFECTIVE"
+ grep -qx 'passwordauthentication no' <<<"$EFFECTIVE"
+ grep -qx 'kbdinteractiveauthentication no' <<<"$EFFECTIVE"
  systemctl stop vps-bootstrap-rollback.timer 2>/dev/null || true
  systemctl stop vps-bootstrap-rollback.service 2>/dev/null || true
  systemctl reset-failed vps-bootstrap-rollback.service 2>/dev/null || true
